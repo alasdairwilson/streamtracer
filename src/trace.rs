@@ -54,25 +54,35 @@ pub fn trace_streamlines<'a>(
     direction: i32,
     step_size: f64,
     max_steps: usize,
-) ->  (Vec<StreamlineStatus>, Array3<f64>) {
+) -> (Vec<StreamlineStatus>, Array3<f64>) {
     let field = VectorField::new(xgrid, ygrid, zgrid, values, cyclic);
 
-    // Trace from each seed in turn
-    let all_lines: Vec<StreamlineResult> = seeds
-        .axis_iter(Axis(0))
-        .into_par_iter()
-        .map(|seed| trace_streamline(
-                seed,
-                &field,
-                &direction,
-                &step_size,
-                max_steps,
-            )
-        ).collect();
-    let extracted_lines: Vec<ArrayView2<f64>> = all_lines.iter().map(|result| ArrayView2::from(&result.line)).collect();
-    let statuses: Vec<StreamlineStatus> = all_lines.iter().map(|result| result.status.clone()).collect();
-    let xs = stack(Axis(0), &extracted_lines).unwrap();
-    return (statuses, xs);
+    // Preallocate the output array
+    let num_seeds = seeds.dim().0;
+
+    // Trace from each seed in turn, filling the points_array directly
+    let results: Vec<(usize, StreamlineResult)> = seeds.axis_iter(Axis(0))
+    .into_par_iter()
+    .enumerate()
+    .map(|(seed_idx, seed)| {
+        let result = trace_streamline(seed, &field, direction, step_size, max_steps);
+        (seed_idx, result)
+    })
+    .collect();
+
+    let mut points_array = Array3::<f64>::zeros((num_seeds, max_steps, 3));
+    let mut statuses: Vec<StreamlineStatus> = Vec::with_capacity(results.len());
+
+    for (seed_idx, result) in results {
+        for (step_idx, row) in result.line.outer_iter().enumerate() {            
+                points_array[[seed_idx, step_idx, 0]] = row[0];
+                points_array[[seed_idx, step_idx, 1]] = row[1];
+                points_array[[seed_idx, step_idx, 2]] = row[2];
+        }
+        statuses.push(result.status.clone());
+    }
+
+    (statuses, points_array)
 }
 
 /// Trace a single streamline
@@ -86,8 +96,8 @@ pub fn trace_streamlines<'a>(
 pub fn trace_streamline(
     x0: ArrayView1<f64>,
     field: &VectorField,
-    direction: &i32,
-    step_size: &f64,
+    direction: i32,
+    step_size: f64,
     max_steps: usize,
 ) -> StreamlineResult {
     // Tracer status
@@ -97,7 +107,7 @@ pub fn trace_streamline(
     let mut n_points: usize = 1;
     // Fold direction into the definition of step size,
     // using sign(step_size) to determine step direction
-    let step = (*step_size) * (*direction as f64);
+    let step = (step_size) * (direction as f64);
 
     // Create output array
     // Take a copy of input seed
